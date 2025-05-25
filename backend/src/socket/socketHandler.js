@@ -2,6 +2,7 @@
 
 import Auction from "../models/auctionModel.js";
 import userModel from "../models/userModel.js";
+import mongoose from "mongoose";
 
 export const setupAuctionHandlers = (io) => {
   io.on("connection", (socket) => {
@@ -12,9 +13,22 @@ export const setupAuctionHandlers = (io) => {
 
     // Handle bid placement
     socket.on("placeBid", async ({ auctionId, bidAmount, userId }) => {
-      console.log("Bid placed:", { auctionId, bidAmount, userId });
       try {
+        // 0. Validate inputs
+        if (!auctionId || !bidAmount || !userId) {
+          return socket.emit("bidError", "Missing auctionId, bidAmount, or userId");
+        }
+        // Add more specific validation if needed (e.g., bidAmount is a positive number)
+        if (typeof bidAmount !== 'number' || bidAmount <= 0) {
+          return socket.emit("bidError", "Invalid bid amount.");
+        }
+
         // 1. Fetch auction from MongoDB
+        // Validate ObjectId formats before querying
+        if (!mongoose.Types.ObjectId.isValid(auctionId) || !mongoose.Types.ObjectId.isValid(userId)) {
+          return socket.emit("bidError", "Invalid ID format");
+        }
+        
         const auction = await Auction.findById(auctionId);
         const user = await userModel.findById(userId);
 
@@ -42,82 +56,66 @@ export const setupAuctionHandlers = (io) => {
 
         // 4. Update in MongoDB
 
-        const updateBid = async (auctionId, bidAmount, userId) => {
-          try {
-            // Fetch the auction
-            if (!auction) {
-              throw new Error("Auction not found");
-            }
+        // It's safer to define the update logic within the handler or call a well-defined service function.
+        // The nested async function `updateBid` was a bit complex and could be simplified or integrated.
 
-            // Find existing bid by the same user
-            const existingBid = auction.highestBidder.find(
-              (bid) => bid.user.toString() === userId
+        // Find existing bid by the same user
+        const existingBidIndex = auction.highestBidder.findIndex(
+          (bid) => bid.user.toString() === userId
+        );
+
+        if (existingBidIndex !== -1) {
+          // User has an existing bid, update it if the new bid is higher
+          if (bidAmount > auction.highestBidder[existingBidIndex].amount) {
+            auction.highestBidder[existingBidIndex].amount = bidAmount;
+            auction.highestBidder[existingBidIndex].bidTime = new Date();
+          } else {
+            return socket.emit(
+              "bidError",
+              "New bid must be higher than your previous bid"
             );
-            console.log("Existing bid:", existingBid);
-
-            if (existingBid) {
-              // Update bid amount only if the new bid is higher
-              console.log("Updating existing bid:", {
-                userId,
-                userName: user.name,
-                amount: bidAmount,
-              });
-              if (bidAmount > existingBid.amount) {
-                existingBid.amount = bidAmount;
-                existingBid.bidTime = new Date();
-              } else {
-                throw new Error(
-                  "New bid must be higher than your previous bid"
-                );
-              }
-            } else {
-              // Push a new bid if the user hasn't bid before
-              console.log("Pushing new bid:", {
-                userId,
-                userName: user.name,
-                amount: bidAmount,
-              });
-              auction.highestBidder.push({
-                user: userId,
-                userName: user.name,
-                amount: bidAmount,
-                bidTime: new Date(),
-              });
-            }
-
-            // Sort bids in descending order & keep only the top 3
-            auction.highestBidder.sort((a, b) => b.amount - a.amount);
-            if (auction.highestBidder.length > 3) {
-              auction.highestBidder = auction.highestBidder.slice(0, 3);
-            }
-
-            // Update currentBid (highest bid)
-            auction.currentBid = auction.highestBidder[0]?.amount || 0;
-
-            // Save the updated auction
-            await auction.save();
-
-            return auction; // Return the updated auction object
-          } catch (error) {
-            throw error;
           }
-        };
+        } else {
+          // New bidder, add their bid
+          auction.highestBidder.push({
+            user: userId,
+            userName: user.name, // Ensure user.name is available and correct
+            amount: bidAmount,
+            bidTime: new Date(),
+          });
+        }
 
-        const updatedAuction = await updateBid(auctionId, bidAmount, userId);
-        console.log(updatedAuction);
-        // 5. Broadcast to all room participants
-        io.to(auctionId).emit("bidUpdate", {
-          auctionId,
-          currentBid: updatedAuction.currentBid,
-          newBid: updatedAuction.currentBid,
-          highestBidder: updatedAuction.highestBidder,
-        });
-      } catch (error) {
-        console.error("Bid processing error:", error);
-        socket.emit("bidError", "Failed to process bid");
+        // Sort bids in descending order & keep only the top N (e.g., top 3 or more)
+        auction.highestBidder.sort((a, b) => b.amount - a.amount);
+        const maxBiddersToShow = 3; // Or make this configurable
+        if (auction.highestBidder.length > maxBiddersToShow) {
+          auction.highestBidder = auction.highestBidder.slice(0, maxBiddersToShow);
+        }
+
+        // Update currentBid (highest bid)
+        auction.currentBid = auction.highestBidder[0]?.amount || auction.startingBid; // Fallback to startingBid if no bids
+
+        await auction.save(); // Save the updated auction document
+
+        // Emit success event or updated auction details
+        io.to(auctionId).emit("bidPlaced", auction); // Emit to a room for this auction
+        socket.emit("bidSuccess", auction); // Confirm to the bidder
+
+      } catch (error) { // Catch block for the main try
+        console.error("Error placing bid:", error);
+        socket.emit("bidError", "An error occurred while placing your bid.");
       }
     });
 
-    // Other handlers...
+    socket.on("joinAuctionRoom", (auctionId) => {
+      socket.join(auctionId);
+      console.log(`User ${socket.id} joined auction room ${auctionId}`);
+    });
+
+    socket.on("leaveAuctionRoom", (auctionId) => {
+      socket.leave(auctionId);
+      console.log(`User ${socket.id} left auction room ${auctionId}`);
+    });
+
   });
 };

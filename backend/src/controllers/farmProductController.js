@@ -22,7 +22,27 @@ export const getAllProducts = async (req, res) => {
 // Create a new farm product
 export const createProduct = async (req, res) => {
   try {
-    const newProduct = await FarmProduct.create(req.body);
+    const { name, price, quantity, category, description, farmer } = req.body;
+    // Add any other fields you expect and want to allow
+
+    if (!name || !price || !quantity) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Name, price, and quantity are required'
+      });
+    }
+
+    const newProductData = {
+      name,
+      price,
+      quantity,
+      category,
+      description,
+      farmer
+      // Add other validated and sanitized fields here
+    };
+
+    const newProduct = await FarmProduct.create(newProductData);
     res.status(201).json({
       status: 'success',
       data: {

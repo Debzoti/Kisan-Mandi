@@ -1,13 +1,23 @@
 import createHttpError from "http-errors"
 import orderModel from "./orderModel.js"
+import mongoose from "mongoose"
 
 
-const  getOrdersByUserId = async (req, res) => {
+const  getOrdersByUserId = async (req, res, next) => {
     try {
-        const orders = await orderModel.find({userId: req.params.userId})
+        const { userId } = req.params;
+        
+        // Validate userId format
+        if (!mongoose.Types.ObjectId.isValid(userId)) {
+           return next(createHttpError(400, "Invalid user ID format"));
+        }
+
+        const orders = await orderModel.find({userId: userId})
+        
         res.json(orders)
     } catch (error) {
-       return createHttpError(500,"error while getting orders")
+       console.error("Error in getOrdersByUserId:", error);
+       return next(createHttpError(500,"error while getting orders"))
     }
 }
 
